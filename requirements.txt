@@ -6,3 +6,4 @@ keras
 deepface
 mtcnn
 Pillow
+mediapipe
