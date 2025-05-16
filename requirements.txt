@@ -7,3 +7,4 @@ deepface
 mtcnn
 Pillow
 mediapipe
+streamlit-webrtc

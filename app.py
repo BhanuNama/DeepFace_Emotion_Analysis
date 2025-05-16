@@ -1,84 +1,43 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import cv2
-import threading
-import time
 from deepface import DeepFace
 from liveness import is_real_face
+import numpy as np
 
-# Make sure this is the very first Streamlit command, exactly once in your file
-st.set_page_config(page_title="Emotion Detector (Optimized)", layout="wide")
-
+st.set_page_config(page_title="Emotion Detector (WebRTC)", layout="wide")
 st.title("🧠 Real-time Emotion Detection with Anti-Spoofing")
 
-FRAME_WIDTH = 480
-FRAME_HEIGHT = 360
-FRAME_WINDOW = st.image([])
-status_placeholder = st.empty()
+class EmotionLivenessDetector(VideoTransformerBase):
+    def __init__(self):
+        self.emotion = "Analyzing..."
+        self.score = 0.0
+        self.live = True
 
-latest_frame = None
-emotion_result = ("Neutral", 0)
-live_result = False
-lock = threading.Lock()
-running = True
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        try:
+            self.live = is_real_face(img)
 
-def emotion_liveness_worker():
-    global latest_frame, emotion_result, live_result, running
-    while running:
-        time.sleep(2)
-        if latest_frame is not None:
-            with lock:
-                frame = latest_frame.copy()
-            live_result = is_real_face(frame)
-            if live_result:
-                try:
-                    res = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False, detector_backend='opencv')
-                    emotion = res['dominant_emotion']
-                    score = res['emotion'][emotion]
-                    emotion_result = (emotion, score)
-                except Exception as e:
-                    print("[ERROR] DeepFace failed:", e)
-                    emotion_result = ("Unknown", 0)
+            if self.live:
+                res = DeepFace.analyze(img, actions=['emotion'], enforce_detection=False, detector_backend='opencv')
+                self.emotion = res[0]['dominant_emotion']
+                self.score = res[0]['emotion'][self.emotion]
+                label = f"{self.emotion} ({self.score:.1f}%) | Real Face ✅"
+                color = (0, 255, 0)
             else:
-                emotion_result = ("Fake Face", 0)
+                label = "Fake Face ❌"
+                color = (0, 0, 255)
 
-def main():
-    global latest_frame, emotion_result, live_result, running
+            cv2.putText(img, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, color, 2, cv2.LINE_AA)
 
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("Cannot access webcam. Please run this app locally with a connected webcam.")
-        return
+        except Exception as e:
+            print("Error:", e)
+            self.emotion = "Error"
+            cv2.putText(img, "Error detecting", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, (0, 0, 255), 2, cv2.LINE_AA)
 
-    threading.Thread(target=emotion_liveness_worker, daemon=True).start()
+        return img
 
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                st.warning("Cannot read frame from webcam.")
-                break
-
-            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-            with lock:
-                latest_frame = frame.copy()
-
-            emotion, score = emotion_result
-            live_text = "Real Face ✅" if live_result else "Fake Face ❌"
-            label = f"{emotion} ({score:.1f}%) | {live_text}"
-            color = (0, 255, 0) if live_result else (0, 0, 255)
-
-            cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                        1, color, 2)
-
-            FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            status_placeholder.markdown(
-                f"*Status:* <span style='color: {'green' if live_result else 'red'}'>{live_text}</span>",
-                unsafe_allow_html=True)
-
-            time.sleep(0.05)
-    finally:
-        running = False
-        cap.release()
-
-if __name__ == "__main__":
-    main()
+webrtc_streamer(key="emotion-stream", video_processor_factory=EmotionLivenessDetector)
