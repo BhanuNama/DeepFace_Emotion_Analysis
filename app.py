@@ -2,78 +2,79 @@ import streamlit as st
 import av
 import cv2
 import numpy as np
-from deepface import DeepFace
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+from deepface import DeepFace
 from liveness import is_real_face
 import asyncio
 import sys
 
-# Fix asyncio issue on Windows (optional for Linux/Cloud)
+# Fix for Windows
 if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-st.set_page_config(page_title="Real-time Emotion Detection", layout="wide")
-st.title("🧠 Real-time Emotion Detection with Anti-Spoofing")
+st.set_page_config(page_title="Fast Emotion Detector", layout="wide")
+st.title("⚡ Low-Lag Real-time Emotion Detection with Anti-Spoofing")
 
-# RTC config for Streamlit Cloud
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+})
 
-# Define the video processor using recv()
-class EmotionLivenessDetector(VideoProcessorBase):
+class EmotionLivenessProcessor(VideoProcessorBase):
     def __init__(self):
-        self.emotion = "Analyzing..."
-        self.score = 0.0
-        self.live = True
+        self.frame_count = 0
+        self.result_emotion = "Initializing..."
+        self.result_score = 0.0
+        self.live_result = True
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
 
-        try:
-            # Liveness Detection
-            self.live = is_real_face(img)
+        self.frame_count += 1
+        display_img = img.copy()
 
-            if self.live:
-                # Emotion Detection
-                res = DeepFace.analyze(
-                    img,
-                    actions=['emotion'],
-                    enforce_detection=False,
-                    detector_backend='opencv'
-                )
-                self.emotion = res[0]['dominant_emotion']
-                self.score = res[0]['emotion'][self.emotion]
-                label = f"{self.emotion} ({self.score:.1f}%) | Real Face ✅"
-                color = (0, 255, 0)
-            else:
-                label = "Fake Face ❌"
-                color = (0, 0, 255)
+        # Analyze every 10th frame only
+        if self.frame_count % 10 == 0:
+            try:
+                small_img = cv2.resize(img, (224, 224))  # Downsample to speed up
 
-            # Draw result
-            cv2.putText(img, label, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                # Liveness check (you can use dummy or real)
+                self.live_result = is_real_face(small_img)
 
-        except Exception as e:
-            print("Error during processing:", e)
-            cv2.putText(img, "Error detecting face", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                if self.live_result:
+                    res = DeepFace.analyze(
+                        small_img,
+                        actions=['emotion'],
+                        enforce_detection=False,
+                        detector_backend='opencv'
+                    )
+                    self.result_emotion = res[0]['dominant_emotion']
+                    self.result_score = res[0]['emotion'][self.result_emotion]
+                else:
+                    self.result_emotion = "Fake Face"
+                    self.result_score = 0.0
 
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            except Exception as e:
+                print("[ERROR]", e)
+                self.result_emotion = "Error"
+                self.result_score = 0.0
 
-# Stream video and apply the processor
+        label = f"{self.result_emotion} ({self.result_score:.1f}%)"
+        if self.live_result:
+            label += " | ✅ Real"
+            color = (0, 255, 0)
+        else:
+            label += " | ❌ Fake"
+            color = (0, 0, 255)
+
+        cv2.putText(display_img, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, color, 2, cv2.LINE_AA)
+
+        return av.VideoFrame.from_ndarray(display_img, format="bgr24")
+
+# Start Streamlit WebRTC
 webrtc_streamer(
-    key="emotion-stream",
-    video_processor_factory=EmotionLivenessDetector,
+    key="live-emotion-detector",
+    video_processor_factory=EmotionLivenessProcessor,
     rtc_configuration=RTC_CONFIGURATION,
     media_stream_constraints={"video": True, "audio": False}
-)
-
-st.markdown(
-    """
-    <style>
-    footer {visibility: hidden;}
-    </style>
-    """,
-    unsafe_allow_html=True
 )
